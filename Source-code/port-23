@@ -1,0 +1,107 @@
+import socket
+import atexit
+import logging
+import graypy
+
+
+# Local IP/Port for the honeypot to listen on (TCP)
+LHOST = '0.0.0.0'
+LPORT = 23
+
+# Banner displayed when connecting to the honeypot
+BANNER = b'200 Ubuntu Server 18.04.4\n '
+logger_sock = None
+
+# Socket timeout in seconds
+TIMEOUT = 100000
+
+def strip_data(data):
+    return data.decode('utf-8').strip()
+
+def telnet_runner(sock, address, indata, my_logger):
+    if strip_data(indata) == '': 
+        sock.send(b"telnet> ")
+    elif strip_data(indata) == "?":
+        sock.send(b"close   	close current connection\nlogout  	forcibly logout remote user and close the connection\ndisplay 	display operating parameters\nmode    	try to enter line or character mode ('mode ?' for more)\nopen    	connect to a site\nquit    	exit telnet\nsend    	transmit special characters ('send ?' for more)\nset     	set operating parameters ('set ?' for more)\nunset   	unset operating parameters ('unset ?' for more)\nstatus  	print status information\ntoggle  	toggle operating parameters ('toggle ?' for more)\nslc     	change state of special characters ('slc ?' for more)\n!       	invoke a subshell\nenviron 	change environment variables ('environ ?' for more)\n?       	print help information\n")
+    elif strip_data(indata) == "mode":
+        sock.send(b"'mode' command requires an argument\n'mode ?' for help.\n")
+    elif strip_data(indata) == "display":
+        sock.send(b"will flush output when sending interrupt characters.\nwon't send interrupt characters in urgent mode.\nwon't skip reading of ~/.telnetrc file.\nwon't map carriage return on output.\nwill recognize certain control characters.\nwon't turn on socket level debugging.\nwon't print hexadecimal representation of network traffic.\nwon't print user readable output for 'netdata'.\nwon't show option processing.\nwon't print hexadecimal representation of terminal traffic.\n\necho            [^E]\nescape          [^]]\nrlogin          [off]\ntracefile       '(standard output)'\nflushoutput     [^O]\ninterrupt       [^C]\nquit            [^\]\neof             [^D]\nerase           [^?]\nkill            [^U]\nlnext           [^V]\nsusp            [^Z]\nreprint         [^R]\nworderase       [^W]\nstart           [^Q]\nstop            [^S]\nforw1           [off]\nforw2           [off]\nayt             [^T]\n")    
+    elif strip_data(indata) == "status":
+        sock.send(b"Connected to Ubuntu Server 18.04.4.\nEscape character is '^]'.\n")  
+    elif strip_data(indata) in ['z','quit','exit']:
+        sock.send(b"bye\n")  
+        sendLog(address, b"bye")
+        return b"bye"
+    else:
+        sock.send(b"?Invalid command\n") 
+    data = sock.recv(1024)
+    
+    # exit data
+    if data == b'\xff\xf4\xff\xfd\x06':
+        sendLog(address, b"session aborted!", my_logger)
+        return b"bye"
+
+    sendLog(address, data, my_logger)
+    return(data) 
+    
+def main():
+    my_logger = logging.getLogger('honeypot_logger')
+    my_logger.setLevel(logging.DEBUG)
+    handler = graypy.GELFUDPHandler('localhost', 12201)
+    my_logger.addHandler(handler)
+    
+    print ('[*] Honeypot starting on ' + LHOST + ':' + str(LPORT))
+    atexit.register(exit_handler)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((LHOST, LPORT))
+    listener.listen(5)
+    while True:
+        (insock, address) = listener.accept()
+        insock.settimeout(TIMEOUT)
+        print ('[*] Honeypot connection from ' + address[0] + ':' + str(address[1]) + ' on port ' + str(LPORT))
+        try:
+            insock.send(BANNER)
+            data = insock.recv(1024)
+            print(f"initial junk data {data}")
+            insock.send(b"Login: \n")
+            data = insock.recv(1024)
+            insock.send(b"Login Successfully\n")
+            sendLog(address[0],data, my_logger)
+            indata = b''
+            while(True):
+                indata = telnet_runner(insock, address[0], indata, my_logger)
+                if indata == b"bye":
+                    break
+
+        except socket.error as e:
+            sendLog(address[0],'Error: ' + str(e), my_logger)
+        else:
+            sendLog(address[0],data, my_logger)
+        finally:
+            insock.close()
+            sendLog(address[0], b"closed", my_logger)
+
+
+
+def sendLog(fromip, message, my_logger):
+    print(f"{fromip}: {strip_data(message)}")
+    my_logger.debug('Hello Graylog.' + fromip + ':' + message.decode('utf-8').strip())
+    #logger_sock.send('IP:' + fromip + ' Port:' + str(LPORT) + ' | ' + message.replace('\r\n', ' '))
+    
+
+def exit_handler():
+    print ('\n[*] Honeypot is shutting down!')
+    listener.close()
+
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+if __name__ == '__main__':
+    try:
+        main()
+        #logger_sock.close()
+    except KeyboardInterrupt:
+        pass
+
+
+
+

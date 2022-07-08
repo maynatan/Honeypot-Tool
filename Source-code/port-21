@@ -1,0 +1,135 @@
+import socket
+import atexit
+import _thread
+import logging
+import graypy
+
+# Local IP/Port for the honeypot to listen on (TCP)
+LHOST = '0.0.0.0'
+LPORT = 21
+
+BANNER = b'220 (vsFTPd 3.0.3)\n'
+logger_sock = None
+
+# Socket timeout in seconds
+TIMEOUT = 1000
+
+users = {'admin_user': 'honeypot', '1':'1'}
+
+def strip_data(data):
+    return data.decode('utf-8').strip()
+
+def ftp_runner(sock, address, indata, my_logger):
+    if indata == "?":
+        sock.send(b"Commands may be abbreviated.  Commands are:\n!		dir		macdef		proxy		site\n$		disconnect	mdelete		sendport	size\naccount		epsv4		mdir		put		status\nappend		form		mget		pwd		struct\nascii		get		mkdir		quit		system\nbell		glob		mls		quote		sunique\nbinary		hash		mode		recv		tenex\nbye		help		modtime		reget		trace\ncase		idle		mput		rstatus		type\ncd		image		newer		rhelp		user\ncdup		ipany		nmap		rename		umask\nchmod		ipv4		nlist		reset		verbose\nclose		ipv6		ntrans		restart		?\ncr		lcd		open		rmdir\ndelete		lpwd		passive		runique\ndebug		ls		prompt		sendn")
+    elif indata == "#":
+        sock.send(b"Now I will destroy your computer you silly attacker!!!! muhahahaha!!!! honeypot\n")
+    elif indata == "nadav":
+        sock.send(b"Now I will destroy your computer you silly attacker!!!! muhahahaha!!!! honeypot\n")
+    elif indata ==  b'starting session' :
+        pass   
+    elif indata in ['z','quit','exit']:
+        sock.send(b"bye\n")
+        sendLog(address, b"bye", my_logger)
+        return b"bye"
+    else:
+        sock.send(b"?Invalid command\n")
+    
+    sock.send(b"ftp> ")
+    data = sock.recv(1024)
+    
+    # exit data
+    if data == b'\xff\xf4\xff\xfd\x06':
+        sendLog(address, b"session aborted!", my_logger)
+        return b"bye"
+
+    sendLog(address, data, my_logger)
+    return(data) 
+
+def clientThread(conn, connip, my_logger):
+    currentDir = "/"
+    isLoggedIn = False
+    isRecivingPassword = False
+    user_to_login = ""
+    log_msg = ""
+    print(conn)
+    print(connip)
+    login_successful = False
+    while not login_successful:
+        conn_data = conn.recv(1024).decode()
+        if isLoggedIn == False and conn_data.startswith('USER'):
+            user_to_login = conn_data[5:]
+            conn.sendall('331 Please specify the password.\n'.encode())
+            isRecivingPassword = True
+        elif isRecivingPassword == True:
+            if conn_data.startswith('PASS'):
+                user_to_login = user_to_login.replace('\n', '').replace('\r', '')
+                password = conn_data[5: ].replace('\n', '').replace('\r', '')
+                if user_to_login in users.keys() and not(user_to_login == '*'):
+                    if users[user_to_login] == password:
+                        conn.sendall('230 Login successful.\n'.encode())
+                        log_msg = b"SUCCESSFUL"
+                        login_successful = True
+                    elif users[user_to_login] == '*':
+                        conn.sendall('230 Login successful.\n'.encode())
+                        log_msg = "SUCCESSFUL"
+                        login_successful = True
+                    else :
+                        conn.sendall('530 Incorrect Login.\n'.encode())
+                        log_msg = 'FAILED'
+                elif '*' in users.keys():
+                    if users['*'] == password:
+                        conn.sendall('230 Login successful.\n'.encode())
+                        log_msg = "SUCCESSFUL"
+                        login_successful = True
+                    else :
+                        conn.sendall('530 Incorrect Login.\n'.encode())
+                        log_msg = ' FAILED'
+                else :
+                    log_msg = 'FAILED'
+                    conn.sendall('530 Incorrect Login.\n'.encode())
+                    
+    sendLog(connip,log_msg, my_logger)                
+    indata = conn.recv(1024)               
+    while True:
+        indata = ftp_runner(conn, connip, indata, my_logger)          
+        if indata == b'bye':
+           conn.close()
+           break 
+
+        
+def main():
+    my_logger = logging.getLogger('honeypot_logger')
+    my_logger.setLevel(logging.DEBUG)
+    handler = graypy.GELFUDPHandler('localhost', 12201)
+    my_logger.addHandler(handler)
+    print ('[*] Honeypot starting on ' + LHOST + ':' + str(LPORT))
+
+    atexit.register(exit_handler)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((LHOST, LPORT))
+    listener.listen(5)
+    while True:
+        (insock, address) = listener.accept()
+        insock.settimeout(TIMEOUT)
+        print ('[*] Honeypot connection from ' + address[0] + ':' + str(address[1]) + ' on port ' + str(LPORT))
+        insock.sendall("220 (vsFTPd 3.0.3)\n".encode())
+        clientThread(insock, address[0], my_logger)
+     	
+
+
+def sendLog(fromip, message, my_logger):
+    #print(f"{fromip}: {strip_data(message)}")
+    my_logger.debug('Hello Graylog.' + fromip + ':' + message.decode('utf-8').strip())
+    #logger_sock.send('IP:' + fromip + ' Port:' + str(LPORT) + ' | ' + message.replace('\r\n', ' '))
+    
+
+def exit_handler():
+    print ('\n[*] Honeypot is shutting down!')
+    listener.close()
+
+listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+if __name__ == '__main__':
+    main()
+        #logger_sock.close()
+  
